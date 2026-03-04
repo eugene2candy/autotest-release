@@ -108,13 +108,43 @@ if ($LocalArchive) {
 } else {
     # --- Remote download mode ---
     if (-not $Version) {
+        # Method 1: GitHub API (may fail due to rate limiting for unauthenticated requests)
+        $latestUrl = "https://api.github.com/repos/$GitHubRepo/releases/latest"
         try {
-            $latestUrl = "https://api.github.com/repos/$GitHubRepo/releases/latest"
             $response = Invoke-RestMethod -Uri $latestUrl -ErrorAction Stop
             $Version = $response.tag_name -replace '^v', ''
         } catch {
+            $apiError = $_.Exception.Message
+            Write-Host "  GitHub API failed: $apiError" -ForegroundColor Gray
+            Write-Host "  Trying fallback method..." -ForegroundColor Gray
+        }
+
+        # Method 2: Fallback — follow the /releases/latest redirect to get the tag from the URL
+        # GitHub redirects /releases/latest to /releases/tag/vX.Y.Z, so we can extract the version
+        if (-not $Version) {
+            try {
+                $releasesUrl = "https://github.com/$GitHubRepo/releases/latest"
+                $headResponse = Invoke-WebRequest -Uri $releasesUrl -Method Head -MaximumRedirection 0 -ErrorAction SilentlyContinue
+                $redirectUrl = $headResponse.Headers.Location
+                if (-not $redirectUrl) {
+                    # PowerShell 7+ may auto-follow redirects; check the final URL
+                    $getResponse = Invoke-WebRequest -Uri $releasesUrl -ErrorAction Stop
+                    $redirectUrl = $getResponse.BaseResponse.RequestMessage.RequestUri.ToString()
+                }
+                if ($redirectUrl -match '/releases/tag/v?(.+)$') {
+                    $Version = $Matches[1]
+                }
+            } catch {
+                # Silently continue to error below
+            }
+        }
+
+        if (-not $Version) {
             Write-Host "Error: Could not determine latest version from GitHub." -ForegroundColor Red
-            Write-Host "Specify a version: `$env:AUTOTEST_VERSION='1.0.0'; iwr -useb ... | iex" -ForegroundColor Yellow
+            Write-Host "  API URL: $latestUrl" -ForegroundColor Gray
+            Write-Host "  This may be caused by GitHub API rate limiting." -ForegroundColor Gray
+            Write-Host "  Try again in a few minutes, or specify a version:" -ForegroundColor Yellow
+            Write-Host "  `$env:AUTOTEST_VERSION='1.0.0'; iwr -useb ... | iex" -ForegroundColor Yellow
             Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
             exit 1
         }

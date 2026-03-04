@@ -124,17 +124,37 @@ if [ -n "$LOCAL_ARCHIVE" ]; then
   fi
   echo "  Version: $VERSION (local archive)"
 elif [ -z "$VERSION" ]; then
-  # Fetch latest release tag from GitHub API
+  # Method 1: GitHub API (may fail due to rate limiting for unauthenticated requests)
   LATEST_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
   if command -v curl &>/dev/null; then
-    VERSION=$(curl -fsSL "$LATEST_URL" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/')
+    API_RESPONSE=$(curl -fsSL "$LATEST_URL" 2>&1) || API_RESPONSE=""
+    VERSION=$(echo "$API_RESPONSE" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/')
   else
-    VERSION=$(wget -qO- "$LATEST_URL" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/')
+    API_RESPONSE=$(wget -qO- "$LATEST_URL" 2>&1) || API_RESPONSE=""
+    VERSION=$(echo "$API_RESPONSE" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/')
+  fi
+
+  # Method 2: Fallback — follow the /releases/latest redirect to get the tag from the URL
+  # GitHub redirects /releases/latest to /releases/tag/vX.Y.Z
+  if [ -z "$VERSION" ]; then
+    echo "  GitHub API failed, trying fallback method..."
+    RELEASES_URL="https://github.com/${GITHUB_REPO}/releases/latest"
+    if command -v curl &>/dev/null; then
+      REDIRECT_URL=$(curl -fsSL -o /dev/null -w '%{url_effective}' "$RELEASES_URL" 2>/dev/null)
+    else
+      REDIRECT_URL=$(wget --max-redirect=5 -qO /dev/null --server-response "$RELEASES_URL" 2>&1 | grep -i 'Location:' | tail -1 | sed 's/.*Location: *//;s/\r//')
+    fi
+    if echo "$REDIRECT_URL" | grep -q '/releases/tag/'; then
+      VERSION=$(echo "$REDIRECT_URL" | sed 's|.*/releases/tag/v\{0,1\}||')
+    fi
   fi
 
   if [ -z "$VERSION" ]; then
     print_red "Error: Could not determine latest version from GitHub."
-    echo "Specify a version: AUTOTEST_VERSION=1.0.0 curl -fsSL ... | bash"
+    echo "  API URL: $LATEST_URL"
+    echo "  This may be caused by GitHub API rate limiting."
+    echo "  Try again in a few minutes, or specify a version:"
+    echo "  AUTOTEST_VERSION=1.0.0 curl -fsSL ... | bash"
     exit 1
   fi
   echo "  Version: $VERSION"
